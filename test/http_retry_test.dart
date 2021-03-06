@@ -2,6 +2,8 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
+import 'dart:async';
+
 import 'package:fake_async/fake_async.dart';
 import 'package:http/http.dart';
 import 'package:http/testing.dart';
@@ -104,6 +106,79 @@ void main() {
         delay: (_) => Duration.zero);
     final response = await client.get('http://example.org');
     expect(response.statusCode, equals(503));
+  });
+
+  test('no timeout is imposed if none is passed', () {
+    FakeAsync().run((fake) {
+      var count = 0;
+      final client = RetryClient(
+          MockClient(expectAsync1((_) async {
+            count++;
+            if (count == 1) {
+              expect(fake.elapsed, equals(Duration.zero));
+              await Future.delayed(const Duration(seconds: 5));
+            } else if (count == 2) {
+              expect(fake.elapsed, equals(const Duration(seconds: 5)));
+              await Future.delayed(const Duration(seconds: 5));
+            } else if (count == 3) {
+              expect(fake.elapsed, equals(const Duration(seconds: 10)));
+              await Future.delayed(const Duration(seconds: 5));
+            } else if (count == 4) {
+              expect(fake.elapsed, equals(const Duration(seconds: 15)));
+            }
+
+            return Response('', 503);
+          }, count: 4)),
+          delay: (_) => Duration.zero);
+
+      expect(client.get('http://example.org'), completes);
+      fake.elapse(const Duration(minutes: 10));
+    });
+  });
+
+  test('throws TimeoutException after timeout with the default 3 tries', () {
+    FakeAsync().run((fake) {
+      final client = RetryClient(
+          MockClient(expectAsync1((_) async {
+            await Future.delayed(const Duration(seconds: 5));
+            return Response('', 503);
+          }, count: 4)),
+          delay: (_) => Duration.zero,
+          timeout: const Duration(milliseconds: 500));
+
+      expect(
+          client.get('http://example.org'), throwsA(isA<TimeoutException>()));
+      fake.elapse(const Duration(minutes: 10));
+    });
+  });
+
+  test('retries after timeout with the default 3 tries, completes finally', () {
+    FakeAsync().run((fake) {
+      var count = 0;
+      final client = RetryClient(
+          MockClient(expectAsync1((_) async {
+            count++;
+            if (count == 1) {
+              expect(fake.elapsed, equals(Duration.zero));
+              await Future.delayed(const Duration(seconds: 5));
+            } else if (count == 2) {
+              expect(fake.elapsed, equals(const Duration(milliseconds: 500)));
+              await Future.delayed(const Duration(seconds: 5));
+            } else if (count == 3) {
+              expect(fake.elapsed, equals(const Duration(milliseconds: 1000)));
+              await Future.delayed(const Duration(seconds: 5));
+            } else if (count == 4) {
+              expect(fake.elapsed, equals(const Duration(milliseconds: 1500)));
+            }
+
+            return Response('', 503);
+          }, count: 4)),
+          delay: (_) => Duration.zero,
+          timeout: const Duration(milliseconds: 500));
+
+      expect(client.get('http://example.org'), completes);
+      fake.elapse(const Duration(minutes: 10));
+    });
   });
 
   test('waits 1.5x as long each time by default', () {

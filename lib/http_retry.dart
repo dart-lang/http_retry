@@ -17,6 +17,9 @@ class RetryClient extends BaseClient {
   /// The number of times a request should be retried.
   final int _retries;
 
+  /// The timeout at which a request will be cancelled and retried
+  final Duration _timeout;
+
   /// The callback that determines whether a request should be retried.
   final bool Function(BaseResponse) _when;
 
@@ -35,8 +38,9 @@ class RetryClient extends BaseClient {
   /// `n` retries means that the request will be sent at most `n + 1` times.
   ///
   /// By default, this retries requests whose responses have status code 503
-  /// Temporary Failure. If [when] is passed, it retries any request for whose
-  /// response [when] returns `true`. If [whenError] is passed, it also retries
+  /// Temporary Failure or have exceeded the timeout if [timeout] is passed.
+  /// If [when] is passed, it retries any request for whose response [when]
+  /// returns `true`. If [whenError] is passed, it also retries
   /// any request that throws an error for which [whenError] returns `true`.
   ///
   /// By default, this waits 500ms between the original request and the first
@@ -51,11 +55,13 @@ class RetryClient extends BaseClient {
   RetryClient(
     this._inner, {
     int retries,
+    Duration timeout,
     bool Function(BaseResponse) when,
     bool Function(Object, StackTrace) whenError,
     Duration Function(int retryCount) delay,
     void Function(BaseRequest, BaseResponse, int retryCount) onRetry,
   })  : _retries = retries ?? 3,
+        _timeout = timeout,
         _when = when ?? ((response) => response.statusCode == 503),
         _whenError = whenError ?? ((_, __) => false),
         _delay = delay ??
@@ -108,9 +114,18 @@ class RetryClient extends BaseClient {
     for (;;) {
       StreamedResponse response;
       try {
-        response = await _inner.send(_copyRequest(request, splitter.split()));
+        var responseFuture =
+            _inner.send(_copyRequest(request, splitter.split()));
+        if (_timeout != null) {
+          responseFuture = responseFuture.timeout(_timeout);
+        }
+        response = await responseFuture;
       } catch (error, stackTrace) {
-        if (i == _retries || !_whenError(error, stackTrace)) rethrow;
+        // make sure that retries happen upon TimeoutExceptions
+        if (i == _retries ||
+            (!_whenError(error, stackTrace) && error is! TimeoutException)) {
+          rethrow;
+        }
       }
 
       if (response != null) {
